@@ -1,0 +1,1369 @@
+---
+title: "quantmeta"
+output: html_document
+date: "2025-08-27"
+---
+### ggsave("dbrde_virus.pdf", plot = dbrde_virus, width = 5, height = 4, device = "pdf")
+
+
+# Figure 3A - Shannon diversity
+```{r}
+############################################################
+# Bacterial–Viral Alpha Diversity Comparison (First-Draw)
+############################################################
+# ============================================================
+# 0. Clean workspace & load packages
+# ============================================================
+library(vegan)    
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(viridis)
+library(patchwork)
+
+
+# ============================================================
+# 1. Function to compute alpha diversity
+# ============================================================
+# Reads a count table and computes Shannon, Simpson, and richness per sample.
+Bacteria <- read_delim("METABAT.refined.bins.coverm.count.tsv") 
+Virus <- read.delim("filtered_VPs_read_count_table.tsv")
+
+compute_alpha <- function(file_path) {
+
+  dat <- read_tsv(file_path, show_col_types = FALSE) %>%
+    as.data.frame()
+
+  # Genome names as rownames
+  rownames(dat) <- dat$Genome
+
+  # Transpose to sample × genome matrix
+  mat <- t(dat[, -1])
+
+  # Compute alpha diversity metrics
+  data.frame(
+    Sample   = rownames(mat),
+    Shannon  = diversity(mat, index = "shannon"),
+    Simpson  = diversity(mat, index = "simpson"),
+    Richness = specnumber(mat)
+  )
+}
+
+
+# ============================================================
+# 2. Sample metadata mapping
+# ============================================================
+# Maps internal sample IDs to site, day, type, and filtration metadata used across analyses.
+sample_mapping <- data.frame(
+  Sample = c(
+    "Sample1","Sample2","Sample3","Sample4","Sample5","Sample6",
+    "Sample7","Sample8","Sample9","Sample10","Sample14","Sample16"
+  ),
+  Sample_name = c(
+    "DS02_UF_fd_1","DS11_UF_fd_1","DS01_UF_fd_1","DS02_UF_fd_2",
+    "DS11_UF_fd_2","DS01_UF_fd_2","DW11_UF_fd_3","DS01_UF_fd_3",
+    "DS01_UF_ds_2","DS01_UF_ds_3","DS01_22_ds_4","DS02_UF_fd_3"
+  ),
+  sites = c(2,11,1,2,11,1,11,1,1,1,1,2),
+  day   = c(1,1,1,2,2,2,3,3,2,3,4,3),
+  type  = c("FD","FD","FD","FD","FD","FD","FD","FD","DS","DS","DS","FD"),
+  filter = c("UF","UF","UF","UF","UF","UF","UF","UF","UF","UF","0.22um","UF")
+)
+
+
+# ============================================================
+# 3. Bacterial MAG alpha diversity
+# ============================================================
+alpha_bacteria <- compute_alpha(
+  "METABAT.refined.bins.coverm.count.tsv"
+) %>%
+  left_join(sample_mapping, by = "Sample") %>%
+  mutate(
+    sites = factor(
+      sites,
+      levels = c(1, 2, 11),
+      labels = c("Site A", "Site B", "Site E")
+    ),
+      day = factor(
+      day,
+      levels = c(1, 2, 3, 4),
+      labels = c("Day 1", "Day 4", "Day 5", "Day 6")
+    )
+  )
+
+
+# ============================================================
+# 4. Viral population alpha diversity
+# ============================================================
+alpha_viral <- compute_alpha(
+  "filtered_VPs_read_count_table.tsv"
+) %>%
+  left_join(sample_mapping, by = "Sample") %>%
+  mutate(
+    sites = factor(
+      sites,
+      levels = c(1, 2, 11),
+      labels = c("DS01", "DS02", "DS11")
+    ),
+    day = factor(
+      day,
+      levels = c(1, 2, 3, 4),
+      labels = c("Day 1", "Day 4", "Day 5", "Day 6")
+    )
+  )
+
+
+# ============================================================
+# 5. Merge bacterial and viral alpha diversity
+# ============================================================
+# Combines bacterial and viral metrics per sample and restricts analysis to first-draw samples.
+merged <- alpha_bacteria %>%
+  rename(
+    Bac_Shannon = Shannon,
+    Bac_Simpson = Simpson
+  ) %>%
+  left_join(
+    alpha_viral %>%
+      rename(
+        Viral_Shannon = Shannon,
+        Viral_Simpson = Simpson
+      ) %>%
+      select(Sample, Viral_Shannon, Viral_Simpson),
+    by = "Sample"
+  ) %>%
+  filter(type == "FD") %>%
+  mutate(
+    Site = factor(
+      sites,
+      levels = c("Site A", "Site B", "Site E")
+    )
+  )
+
+
+# ============================================================
+# 6. Prepare data for faceted plotting
+# ============================================================
+plot_data_long <- merged %>%
+  pivot_longer(
+    cols = c(Bac_Shannon, Viral_Shannon, Bac_Simpson, Viral_Simpson),
+    names_to = c("Community", "Metric"),
+    names_sep = "_",
+    values_to = "Diversity"
+  ) %>%
+  pivot_wider(
+    names_from = Community,
+    values_from = Diversity
+  )
+
+# ============================================================
+# 7. Final faceted scatter plot
+# ============================================================
+# Compares bacterial vs viral alpha diversity across sites.
+alpha_shannon <- ggplot(
+  filter(plot_data_long, Metric == "Shannon"),
+  aes(x = Bac, y = Viral, fill = Site)
+) +
+  geom_point(size = 4, shape = 21, stroke = 0.5, alpha = 0.6) +
+  scale_fill_manual(values = viridis(3, end = 0.9)) +
+  labs(
+    x = "MAG Shannon Diversity",
+    y = "vOTU Shannon Diversity"
+  ) +
+  theme_bw(base_size = 12)
+
+alpha_shannon
+
+#ggsave("alpha.pdf", plot = alpha, width = 3, height = 4, device = "pdf")
+
+```
+
+# Figure 3B - total NTM concentration
+```{r}
+############################################################
+# NTM Total MAG Concentration Over Time (First-Draw Samples)
+############################################################
+# ==========================================================
+# Load required libraries
+# ==========================================================
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(viridis)
+
+
+# ==========================================================
+# 1. Load and inspect NTM MAG abundance data
+# ==========================================================
+ntm <- read.table(
+  "NTM_MAGs_results.txt",
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE
+)
+
+# Remove rows with missing values
+ntm <- na.omit(ntm)
+
+# ==========================================================
+# 2. Load water chemistry metadata
+# ==========================================================
+chemistry <- read.csv(
+  "A2VS sample  - Sheet1_2.csv",
+  stringsAsFactors = FALSE
+)
+
+
+# ==========================================================
+# 3. Merge abundance data with chemistry metadata
+# ==========================================================
+ntm <- ntm %>%
+  left_join(chemistry, by = "sample")
+
+
+# ==========================================================
+# 4. Format Day and Site variables
+# ==========================================================
+# Convert numeric Day to labeled factor (Day 1, Day 2, etc.)
+ntm$Day <- factor(
+  ntm$Day,
+  levels = sort(unique(ntm$Day)),
+  labels = paste("Day", sort(unique(ntm$Day)))
+)
+
+# Recode Site IDs to readable labels
+ntm$Site <- fct_recode(
+  ntm$Site,
+  "Site A" = "DS1",
+  "Site B" = "DS2",
+  "Site E" = "DS11"
+)
+
+# Explicit Site ordering for plotting
+ntm$Site <- factor(
+  ntm$Site,
+  levels = c("Site A", "Site B", "Site E")
+)
+
+
+# ==========================================================
+# 5. Summarize total MAG concentration (gc/L)
+# ==========================================================
+# First-draw samples only
+fd_total <- ntm %>%
+  filter(Type == "fd") %>%
+  group_by(Site, Day) %>%
+  summarise(
+    total_gcL = sum(gc_L),
+    .groups = "drop"
+  ) %>%
+  mutate(log10_gcL = log10(total_gcL))
+
+# ==========================================================
+# 6. Relabel Day values to reflect actual sampling days
+# ==========================================================
+fd_total <- fd_total %>%
+  mutate(
+    Day = recode(
+      Day,
+      "Day 1" = "Day 1",
+      "Day 2" = "Day 3",
+      "Day 3" = "Day 7"
+    )
+  )
+
+
+# ==========================================================
+# 7. Plot total NTM concentration over time (first-draw)
+# ==========================================================
+total_NTM <- ggplot(
+  fd_total,
+  aes(
+    x = Day,
+    y = log10_gcL,
+    fill = Site,
+    group = Site
+  )
+) +
+  geom_line(linewidth = 1) +   # thicker line
+  geom_point(
+    size = 5,
+    shape = 21,
+    stroke = 0.5,
+    alpha = 1
+  ) +
+  scale_fill_manual(
+    values = viridisLite::viridis(3, end = 0.9)
+  ) +
+  scale_y_continuous(
+    limits = c(4.5, 6.5),
+    breaks = seq(4, 6.5, by = 0.5)
+  ) +
+  theme_bw() +
+  labs(
+    x = NULL,
+    y = "Total NTM concentration (log10(copies/L))",
+    color = "Site"
+  ) +
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.text.y = element_text(size = 12, color = "black"),
+    legend.text = element_text(size = 12, color = "black"),
+    legend.title = element_text(size = 12, color = "black"),
+    legend.position = "none"
+  )
+total_NTM
+
+#ggsave("total_NTM.pdf", plot = total_NTM, width = 4, height = 5, device = "pdf")
+```
+
+# Figure 3D - NTM speciation
+```{r}
+############################################################
+# NTM MAG Absolute Abundance Visualization
+############################################################
+
+
+# ==========================================================
+# Load required libraries
+# ==========================================================
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(viridis)
+
+
+# ==========================================================
+# 1. Load input data
+# ==========================================================
+# NTM MAG absolute abundance results
+ntm <- read.table(
+  "NTM_MAGs_results.txt",
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE
+)
+
+# Water chemistry metadata for sample name 
+chemistry <- read.csv(
+  "A2VS sample  - Sheet1_2.csv",
+  stringsAsFactors = FALSE
+)
+
+
+# ==========================================================
+# 2. Basic cleaning and merging
+# ==========================================================
+# Remove rows with missing values
+ntm <- na.omit(ntm)
+
+# Merge NTM data with chemistry metadata by sample ID
+ntm <- ntm %>%
+  left_join(chemistry, by = "sample")
+
+
+# ==========================================================
+# 3. Format Day and Site variables
+# ==========================================================
+# Convert Day to a labeled factor (Day 1, Day 2, etc.)
+ntm$Day <- factor(
+  ntm$Day,
+  levels = sort(unique(ntm$Day)),
+  labels = paste("Day", sort(unique(ntm$Day)))
+)
+
+# Recode Site IDs to human-readable labels
+ntm$Site <- fct_recode(
+  ntm$Site,
+  "Site A" = "DS1",
+  "Site B" = "DS2",
+  "Site E" = "DS11"
+)
+
+
+# ==========================================================
+# 4. Map MAG contig IDs to species names
+# ==========================================================
+MAG_lookup <- data.frame(
+  Contig = c(
+    "METABAT_107-contigs",
+    "METABAT_121-contigs_2",
+    "METABAT_44-contigs_1",
+    "METABAT_128-contigs",
+    "METABAT_139-contigs",
+    "METABAT_193-contigs_1",
+    "METABAT_311-contigs"
+  ),
+  name = c(
+    "M. gordonae",
+    "M. avium",
+    "M. paragordonae",
+    "M. llatzerense",
+    "M. phocaicum",
+    "M. gadium",
+    "M. arupense"
+  )
+)
+
+
+# ==========================================================
+# 5. Create plotting-ready dataset
+# ==========================================================
+ntm2 <- ntm %>%
+  left_join(MAG_lookup, by = c("bin" = "Contig")) %>%
+  mutate(
+    MAG_name = ifelse(!is.na(name), name, bin),
+    log_gcL  = log10(gc_L)
+  )
+
+# Explicit Site order
+ntm2$Site <- factor(
+  ntm2$Site,
+  levels = c("Site A", "Site B", "Site E")
+)
+
+# Recode and order sample Type
+ntm2$Type <- recode(
+  ntm2$Type,
+  "fd" = "first-draw",
+  "ds" = "full-flush"
+)
+
+# Relabel Day values to reflect sampling schedule
+ntm2 <- ntm2 %>%
+  mutate(
+    Day = recode(
+      Day,
+      "Day 1" = "Day 1",
+      "Day 2" = "Day 3",
+      "Day 3" = "Day 7",
+      "Day 4" = "Day 8"
+    )
+  )
+
+
+# ==========================================================
+# 6. Subset to first-draw samples only
+# ==========================================================
+ntm2_filtered <- ntm2 %>%
+  filter(Type == "first-draw")
+
+
+# ==========================================================
+# 7. Bubble plot: first-draw samples (color only)
+# ==========================================================
+NTM_speciation <- ggplot(ntm2_filtered, aes(x = Day, y = MAG_name, color = log_gcL)) +
+  geom_point(size = 9) +
+  facet_wrap(~ Site, ncol = 4) +
+  scale_color_viridis_c(option = "plasma", end = 0.9) +
+  theme_bw() +
+  labs(
+    x = NULL,
+    y = NULL,
+    color = "log10(copies/L)"
+  ) +
+  theme(
+    panel.grid.major = element_blank(),   # remove major grid
+    panel.grid.minor = element_blank(),   # remove minor grid
+    strip.background = element_rect(fill = "white", color = "black"),
+    axis.text.x = element_text(size = 13, color = "black"),
+    axis.text.y = element_text(size = 13, color = "black", face = "italic"),
+    legend.title = element_text(size = 11, color = "black"),
+    legend.text = element_text(size = 11, color = "black"),
+    strip.text = element_text(size = 13, color = "black"),
+    legend.position = "right"
+  )
+
+NTM_speciation
+
+ggsave("NTM_speciation.pdf", plot = NTM_speciation, width = 13, height = 4, device = "pdf")
+
+
+```
+
+# Figure 4 - NTM KEGG ID
+```{r}
+############################################################
+# Gene-level KO Abundance Analysis and Categorized Bubble Plot
+############################################################
+
+
+# ==========================================================
+# Load required libraries
+# ==========================================================
+library(dplyr)
+library(readr)
+library(tidyr)
+library(tidyverse)
+library(pheatmap)
+library(viridis)
+library(patchwork)
+
+
+# ==========================================================
+# 1. Load gene-level gc/L results
+# ==========================================================
+# This file contains gene-level absolute abundance (copies/L) across samples and MAGs.
+gcl <- read_csv("NTM_gene_gcL_results.csv")
+
+# Construct a consistent gene identifier by combining contig name and gene number extracted from GeneID
+gcl <- gcl %>%
+  mutate(
+    Gene_number = sub(".*_", "", GeneID),
+    Geneid_full = paste0(Chr, "_", Gene_number)
+  )
+
+# Keep essential columns and standardize MAG names
+gcl_clean <- gcl %>%
+  select(Geneid_full, MAG, Sample, gene_gcL) %>%
+  mutate(
+    MAG = gsub("^METABAT_([0-9]+).*", "MAG_\\1", MAG)
+  )
+
+
+# ==========================================================
+# 2. Load GhostKOALA KO annotations (per MAG)
+# ==========================================================
+# Each file contains KO annotations for one MAG.
+colnames_list <- c(
+  "Geneid_full", "KO", "Definition",
+  "score", "second_best", "second_score"
+)
+
+ghost_44  <- read.delim("user_ko_definition-44.txt",  header = FALSE) %>% setNames(colnames_list) %>% mutate(MAG = "MAG_44")
+ghost_107 <- read.delim("user_ko_definition-107.txt", header = FALSE) %>% setNames(colnames_list) %>% mutate(MAG = "MAG_107")
+ghost_121 <- read.delim("user_ko_definition-121.txt", header = FALSE) %>% setNames(colnames_list) %>% mutate(MAG = "MAG_121")
+ghost_128 <- read.delim("user_ko_definition-128.txt", header = FALSE) %>% setNames(colnames_list) %>% mutate(MAG = "MAG_128")
+ghost_139 <- read.delim("user_ko_definition-139.txt", header = FALSE) %>% setNames(colnames_list) %>% mutate(MAG = "MAG_139")
+ghost_193 <- read.delim("user_ko_definition-193.txt", header = FALSE) %>% setNames(colnames_list) %>% mutate(MAG = "MAG_193")
+ghost_311 <- read.delim("user_ko_definition-311.txt", header = FALSE) %>% setNames(colnames_list) %>% mutate(MAG = "MAG_311")
+
+# Combine all KO annotations into a single table
+ghost_all <- bind_rows(
+  ghost_44,
+  ghost_107,
+  ghost_121,
+  ghost_128,
+  ghost_139,
+  ghost_193,
+  ghost_311
+) %>%
+  select(Geneid_full, KO, Definition, MAG)
+
+
+# ==========================================================
+# 3. Merge KO annotations with gene-level gc/L data
+# ==========================================================
+# The resulting table contains gene abundance, KO annotation, functional definition, and MAG identity.
+merged <- gcl_clean %>%
+  left_join(ghost_all, by = c("Geneid_full", "MAG"))
+
+
+# ==========================================================
+# 4. Summarize KO abundance per MAG
+# ==========================================================
+# Gene-level gc/L values are averaged across samples at the KO level within each MAG.
+ko_summary <- merged %>%
+  filter(!is.na(KO), KO != "") %>%
+  group_by(MAG, KO, Definition) %>%
+  summarise(
+    Average_gcL = mean(gene_gcL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+# ==========================================================
+# 5. Create a complete MAG × KO matrix
+# ==========================================================
+ko_mag_avg <- merged %>%
+  filter(!is.na(KO), KO != "") %>%
+  group_by(MAG, KO, Definition) %>%
+  summarise(
+    avg_gcL = mean(gene_gcL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+all_MAGs <- sort(unique(merged$MAG))
+all_KOs  <- sort(unique(ko_mag_avg$KO))
+
+ko_mag_complete <- ko_mag_avg %>%
+  complete(
+    MAG = all_MAGs,
+    KO = all_KOs,
+    fill = list(avg_gcL = 0)
+  ) %>%
+  group_by(KO) %>%
+  fill(Definition, .direction = "downup") %>%
+  ungroup()
+
+
+# ==========================================================
+# 6. Identify the top 20 KOs across all MAGs
+# ==========================================================
+top20_kos <- ko_mag_complete %>%
+  group_by(KO, Definition) %>%
+  summarise(
+    global_avg = mean(avg_gcL),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(global_avg)) %>%
+  slice_head(n = 20)
+
+
+# ==========================================================
+# 7. Prepare data for bubble plot
+# ==========================================================
+bubble_df <- ko_mag_complete %>%
+  filter(KO %in% top20_kos$KO) %>%
+  mutate(
+    KO_ID_clean = Definition,
+    MAG = factor(MAG, levels = unique(merged$MAG))
+  )
+
+
+# ==========================================================
+# 8. Map MAG IDs to species names
+# ==========================================================
+mag_species_map <- c(
+  "MAG_107" = "M. gordonae",
+  "MAG_121" = "M. avium",
+  "MAG_44"  = "M. paragordonae",
+  "MAG_128" = "M. llatzerense",
+  "MAG_139" = "M. phocaicum",
+  "MAG_193" = "M. gadium",
+  "MAG_311" = "M. arupense"
+)
+
+bubble_df$MAG <- factor(
+  mag_species_map[as.character(bubble_df$MAG)],
+  levels = mag_species_map
+)
+
+
+# ==========================================================
+# 9. Compute log10-transformed abundance for visualization
+# ==========================================================
+bubble_df <- bubble_df %>%
+  mutate(log10_gcL = log10(avg_gcL + 1))
+
+
+# ==========================================================
+# 10. Define KO ordering and clean KO labels
+# ==========================================================
+# Remove trailing EC annotations and enforce an KO ordering for the y-axis.
+bubble_df$KO_ID_clean <- gsub(
+  "\\s*\\[EC:[^]]+\\]\\s*$",
+  "",
+  as.character(bubble_df$Definition)
+)
+
+ko_order <- c(
+  "secA; preprotein translocase subunit SecA",
+  "trbE; type IV secretion system protein TrbE",
+  "carB, CPA2; carbamoyl-phosphate synthase large subunit",
+  "gltB; glutamate synthase (NADPH) large chain",
+  "metH, MTR; 5-methyltetrahydrofolate--homocysteine methyltransferase",
+  "AHCY, ahcY; adenosylhomocysteinase",
+  "aceE; pyruvate dehydrogenase E1 component",
+  "acnA; aconitate hydratase A / 2-methylisocitrate dehydratase",
+  "fas; fatty acid synthase, bacteria type",
+  "pks5; polyketide synthase 5",
+  "pks12; mycoketide-CoA synthase",
+  "pks13; polyketide synthase 13",
+  "accA2; acyl-CoA carboxylase subunit alpha",
+  "clpB; ATP-dependent Clp protease ATP-binding subunit ClpB",
+  "ettA; energy-dependent translational throttle protein EttA",
+  "rpoB; DNA-directed RNA polymerase subunit beta",
+  "rpoC; DNA-directed RNA polymerase subunit beta'",
+  "uvrA; excinuclease ABC subunit A",
+  "mfd; transcription-repair coupling factor (superfamily II helicase)",
+  "lhr; ATP-dependent helicase Lhr and Lhr-like helicase"
+)
+
+bubble_df$KO_ID_clean <- factor(
+  bubble_df$KO_ID_clean,
+  levels = ko_order
+)
+
+
+# ==========================================================
+# 11. Assign functional categories to KOs
+# ==========================================================
+ko_category <- c(
+  "secA; preprotein translocase subunit SecA" = "Secretion system",
+  "trbE; type IV secretion system protein TrbE" = "Secretion system",
+
+  "carB, CPA2; carbamoyl-phosphate synthase large subunit" = "Other metabolism",
+  "gltB; glutamate synthase (NADPH) large chain" = "Other metabolism",
+  "metH, MTR; 5-methyltetrahydrofolate--homocysteine methyltransferase" = "Other metabolism",
+  "AHCY, ahcY; adenosylhomocysteinase" = "Other metabolism",
+  "aceE; pyruvate dehydrogenase E1 component" = "Other metabolism",
+  "acnA; aconitate hydratase A / 2-methylisocitrate dehydratase" = "Other metabolism",
+
+  "fas; fatty acid synthase, bacteria type" = "Lipid metabolism",
+  "pks5; polyketide synthase 5" = "Lipid metabolism",
+  "pks12; mycoketide-CoA synthase" = "Lipid metabolism",
+  "pks13; polyketide synthase 13" = "Lipid metabolism",
+  "accA2; acyl-CoA carboxylase subunit alpha" = "Lipid metabolism",
+
+  "clpB; ATP-dependent Clp protease ATP-binding subunit ClpB" = "Heat shock proteins",
+  "ettA; energy-dependent translational throttle protein EttA" = "Heat shock proteins",
+
+  "rpoB; DNA-directed RNA polymerase subunit beta" = "DNA repair and recombination proteins",
+  "rpoC; DNA-directed RNA polymerase subunit beta'" = "DNA repair and recombination proteins",
+  "uvrA; excinuclease ABC subunit A" = "DNA repair and recombination proteins",
+  "mfd; transcription-repair coupling factor (superfamily II helicase)" = "DNA repair and recombination proteins",
+  "lhr; ATP-dependent helicase Lhr and Lhr-like helicase" = "DNA repair and recombination proteins"
+)
+
+bubble_df$Category <- ko_category[bubble_df$KO_ID_clean]
+
+
+# ==========================================================
+# 12. Create KO category annotation plot
+# ==========================================================
+category_colors <- c(
+  "Secretion system" = "#f6ddc6",
+  "Other metabolism" = "#dff0d8",
+  "Lipid metabolism" = "#ead1dc",
+  "Heat shock proteins" = "#d9edf7",
+  "DNA repair and recombination proteins" = "#fff59d"
+)
+
+anno_df <- bubble_df %>%
+  distinct(KO_ID_clean, Category)
+
+p_anno <- ggplot(
+  anno_df,
+  aes(x = 1, y = KO_ID_clean, fill = Category)
+) +
+  geom_tile(width = 1) +
+  scale_fill_manual(
+    values = category_colors,
+    name = "Gene category"
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin = margin(t = 5, r = 5, b = 5, l = 5)
+  )
+
+p_anno
+
+
+# ==========================================================
+# 14. Create heatmap
+# ==========================================================
+p_heatmap <- ggplot(
+  bubble_df,
+  aes(x = MAG, y = KO_ID_clean, fill = log10_gcL)
+) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  scale_fill_gradientn(
+    colours = c("white", viridis::plasma(50)),
+    name = "log10(copies/L)"
+  ) +
+  theme_bw() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(
+      angle = 45, hjust = 1, size = 12, color = "black", face = "italic"
+    ),
+    axis.text.y = element_text(size = 12, color = "black"),
+    panel.grid = element_blank(),
+    plot.margin = margin(t = 5, r = 5, b = 5, l = 0),
+    legend.title = element_text(size = 12, color = "black"),
+    legend.text = element_text(size = 12, color = "black")
+  )
+
+p_heatmap
+
+# ==========================================================
+# 15. Combine annotation and heatmap
+# ==========================================================
+p <- (p_anno + p_heatmap) +
+  plot_layout(
+    widths = c(0.1, 1),
+    guides = "collect"
+  ) &
+  theme(legend.position = "right")
+
+#ggsave("NTM_KEGG_heatmap.pdf", plot = p, width = 11, height = 8, device = "pdf")
+
+```
+
+# Figure 5C - NTM plasmid KEGG ID 
+```{r}
+############################################################
+# Plasmid KO Abundance Analysis and Visualization
+############################################################
+
+
+# ==========================================================
+# Load required libraries
+# ==========================================================
+library(dplyr)
+library(readr)
+library(tidyr)
+library(tidyverse)
+library(pheatmap)
+library(viridis)
+
+
+# ==========================================================
+# 1. Load plasmid gene gc/L results
+# ==========================================================
+# This file contains gene-level absolute abundance (copies/L) for plasmid-associated genes across samples.
+plasmid_gcl <- read_csv("NTM_plasmid_gcL_results.csv")
+
+# Create a consistent gene identifier by combining contig name and gene number extracted from GeneID
+plasmid_gcl <- plasmid_gcl %>%
+  mutate(
+    Gene_number = sub(".*_", "", GeneID),
+    Geneid_full = paste0(Chr, "_", Gene_number)
+  )
+
+# Keep only essential columns and standardize MAG names
+plasmid_gcl_clean <- plasmid_gcl %>%
+  select(Geneid_full, MAG, Sample, gene_gcL) %>%
+  mutate(
+    MAG = as.character(MAG),
+    MAG = gsub("^METABAT_([0-9]+).*", "MAG_\\1", MAG)
+  )
+
+
+# ==========================================================
+# 2. Load GhostKOALA KO annotations for plasmid genes
+# ==========================================================
+# This file maps plasmid genes to KEGG Orthologs (KOs) and functional definitions.
+colnames_list <- c(
+  "Geneid_full", "KO", "Definition",
+  "score", "second_best", "second_score"
+)
+
+ghost_plasmid <- read.delim(
+  "user_ko_definition_plasmid.txt",
+  header = FALSE
+) %>%
+  setNames(colnames_list)
+
+
+# ==========================================================
+# 3. Load contig mapping file
+# ==========================================================
+# This file links original contig names to mapped contig names following dereplication or reassignment.
+plasmid_map <- read.delim(
+  "plasmid_full_hits_contig.tsv",
+  header = FALSE,
+  sep = ""
+)
+
+colnames(plasmid_map) <- c(
+  "Original_Contig", "Mapped_Contig",
+  "MAG", "Len1", "Len2", "Identity"
+)
+
+
+# ==========================================================
+# 4. Fix contig names and reconcile gene IDs
+# ==========================================================
+# This step ensures that KO annotations match the gene IDs used in the gc/L file after contig renaming.
+ghost_plasmid2 <- ghost_plasmid %>%
+  mutate(
+    Contig_base = sub("_[0-9]+$", "", Geneid_full)
+  ) %>%
+  left_join(
+    plasmid_map,
+    by = c("Contig_base" = "Original_Contig")
+  ) %>%
+  mutate(
+    MAG = sub("^METABAT_([0-9]+).*", "MAG_\\1", MAG),
+    Geneid_final = ifelse(
+      !is.na(Mapped_Contig),
+      paste0(
+        Mapped_Contig,
+        sub("^.*(_[0-9]+)$", "\\1", Geneid_full)
+      ),
+      Geneid_full
+    )
+  )
+
+
+# ==========================================================
+# 5. Merge KO annotations with gene-level gc/L data
+# ==========================================================
+# The resulting table contains gene abundance, KO annotation, functional definition, and MAG identity.
+plasmid_merged <- plasmid_gcl_clean %>%
+  left_join(
+    ghost_plasmid2 %>%
+      select(Geneid_final, KO, Definition, MAG),
+    by = c("Geneid_full" = "Geneid_final", "MAG")
+  )
+
+
+# ==========================================================
+# 6. Summarize KO abundance per MAG
+# ==========================================================
+# Gene-level gc/L values are averaged across samples at the KO level within each MAG.
+plasmid_ko_summary <- plasmid_merged %>%
+  filter(!is.na(KO), KO != "") %>%
+  group_by(MAG, KO, Definition) %>%
+  summarise(
+    Average_gcL = mean(gene_gcL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+# ==========================================================
+# 7. Create a complete MAG × KO matrix
+# ==========================================================
+# This ensures that all MAG–KO combinations exist, with missing values filled as zero.
+ko_plasmid_avg <- plasmid_merged %>%
+  filter(!is.na(KO), KO != "") %>%
+  group_by(MAG, KO, Definition) %>%
+  summarise(
+    avg_gcL = mean(gene_gcL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+all_MAGs <- sort(unique(plasmid_merged$MAG))
+all_KOs  <- sort(unique(ko_plasmid_avg$KO))
+
+ko_plasmid_complete <- ko_plasmid_avg %>%
+  complete(
+    MAG = all_MAGs,
+    KO = all_KOs,
+    fill = list(avg_gcL = 0)
+  ) %>%
+  group_by(KO) %>%
+  fill(Definition, .direction = "downup") %>%
+  ungroup()
+
+
+# ==========================================================
+# 8. Identify the top 20 plasmid-associated KOs
+# ==========================================================
+# Top KOs are selected based on global average abundance across all MAGs.
+top20_plasmid_kos <- ko_plasmid_complete %>%
+  group_by(KO, Definition) %>%
+  summarise(
+    global_avg = mean(avg_gcL),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(global_avg)) %>%
+  slice_head(n = 20)
+
+# ==========================================================
+# 9. Prepare data for bubble plot
+# ==========================================================
+# Remove bracketed annotations (e.g., "[*]") from KO labels
+bubble_df_plasmid <- ko_plasmid_complete %>%
+  filter(KO %in% top20_plasmid_kos$KO) %>%
+  mutate(
+    KO_ID_clean = gsub("\\s*\\[.*?\\]", "", Definition),
+    MAG = factor(MAG, levels = all_MAGs)
+  )
+
+
+# ==========================================================
+# 10. Map MAG IDs to species names
+# ==========================================================
+mag_species_map <- c(
+  "MAG_107" = "M. gordonae",
+  "MAG_121" = "M. avium",
+  "MAG_44"  = "M. paragordonae",
+  "MAG_128" = "M. llatzerense",
+  "MAG_139" = "M. phocaicum",
+  "MAG_193" = "M. gadium",
+  "MAG_311" = "M. arupense"
+)
+
+bubble_df_plasmid$MAG <- factor(
+  mag_species_map[as.character(bubble_df_plasmid$MAG)],
+  levels = mag_species_map
+)
+
+
+# ==========================================================
+# 11. Compute log10-transformed abundance for visualization
+# ==========================================================
+bubble_df_plasmid <- bubble_df_plasmid %>%
+  mutate(log10_gcL = log10(avg_gcL + 1))
+
+ko_order <- c(
+  "mycP; membrane-anchored mycosin MYCP",
+  "eccC; ESX secretion system protein EccC",
+  "ALDH; aldehyde dehydrogenase (NAD+)",
+  "gltB; glutamate synthase (NADPH) large chain",
+  "gltD; glutamate synthase (NADPH) small chain", 
+  "pntA; proton-translocating NAD(P)+ transhydrogenase subunit alpha",
+  "pntB; proton-translocating NAD(P)+ transhydrogenase subunit beta",
+  "cysNC; bifunctional enzyme CysN/CysC",
+  "kstD; 3-oxosteroid 1-dehydrogenase",
+  "fadD9; fatty acid CoA ligase FadD9",
+  "pks5; polyketide synthase 5",
+    "zntA; Zn2+/Cd2+-exporting ATPase",
+  "K06994; putative drug exporter of the RND superfamily",
+  "copA, ctpA, ATP7; P-type Cu+ transporter",
+  "DNMT1, dcm; DNA (cytosine-5)-methyltransferase 1",
+  "ftsK, spoIIIE; DNA segregation ATPase FtsK/SpoIIIE, S-DNA-T family",
+  "recD; exodeoxyribonuclease V alpha subunit",
+  "xerC; integrase/recombinase XerC",
+  "IARS, ileS; isoleucyl-tRNA synthetase",
+  "prkC, stkP; eukaryotic-like serine/threonine-protein kinase"
+)
+
+bubble_df_plasmid$KO_ID_clean <- factor(
+  bubble_df_plasmid$KO_ID_clean,
+  levels = ko_order
+)
+
+
+# ==========================================================
+# 11. Assign functional categories to KOs
+# ==========================================================
+ko_category <- c(
+  "mycP; membrane-anchored mycosin MYCP" = "Secretion system",
+  "eccC; ESX secretion system protein EccC" = "Secretion system",
+  "ALDH; aldehyde dehydrogenase (NAD+)" = "Other metabolism",
+  "gltB; glutamate synthase (NADPH) large chain" = "Other metabolism",
+  "gltD; glutamate synthase (NADPH) small chain" = "Other metabolism", 
+  "pntA; proton-translocating NAD(P)+ transhydrogenase subunit alpha" = "Other metabolism",
+  "pntB; proton-translocating NAD(P)+ transhydrogenase subunit beta" = "Other metabolism",
+  "cysNC; bifunctional enzyme CysN/CysC" = "Other metabolism",
+  "kstD; 3-oxosteroid 1-dehydrogenase" = "Other metabolism",
+  "fadD9; fatty acid CoA ligase FadD9" = "Lipid metabolism",
+  "pks5; polyketide synthase 5" = "Lipid metabolism",
+    "zntA; Zn2+/Cd2+-exporting ATPase" = "Transporter",
+  "K06994; putative drug exporter of the RND superfamily" = "Transporter",
+  "copA, ctpA, ATP7; P-type Cu+ transporter" = "Transporter",
+  "DNMT1, dcm; DNA (cytosine-5)-methyltransferase 1" = "Genetic information processing",
+  "ftsK, spoIIIE; DNA segregation ATPase FtsK/SpoIIIE, S-DNA-T family" = "Genetic information processing",
+  "recD; exodeoxyribonuclease V alpha subunit" = "Genetic information processing",
+  "xerC; integrase/recombinase XerC" = "Genetic information processing",
+  "IARS, ileS; isoleucyl-tRNA synthetase" = "Others",
+  "prkC, stkP; eukaryotic-like serine/threonine-protein kinase" = "Others"
+)
+
+bubble_df_plasmid$Category <- ko_category[bubble_df_plasmid$KO_ID_clean]
+
+
+# ==========================================================
+# 12. Create KO category annotation plot
+# ==========================================================
+category_colors <- c(
+  "Others" = "lightgrey",
+  "Genetic information processing" = "goldenrod2",
+  "Transporter" = "dodgerblue1",
+  "Lipid metabolism" = "#ead1dc",
+  "Other metabolism" = "#dff0d8",
+  "Secretion system" = "#f6ddc6"
+)
+
+category <- c(
+  "Others",
+  "Genetic information processing",
+  "Transporter",
+  "Lipid metabolism",
+  "Other metabolism",
+  "Secretion system" 
+)
+
+anno_df <- bubble_df_plasmid %>%
+  distinct(KO_ID_clean, Category)
+
+anno_df$Category <- factor(
+  anno_df$Category,
+  levels = category
+)
+
+p_anno <- ggplot(
+  anno_df,
+  aes(x = 1, y = KO_ID_clean, fill = Category)
+) +
+  geom_tile(width = 1) +
+  scale_fill_manual(
+    values = category_colors,
+    name = "Gene category"
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin = margin(t = 5, r = 5, b = 5, l = 5)
+  )
+
+p_anno
+# ==========================================================
+# 14. Create heatmap
+# ==========================================================
+p_heatmap <- ggplot(
+  bubble_df_plasmid,
+  aes(x = MAG, y = KO_ID_clean, fill = log10_gcL)
+) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  scale_fill_gradientn(
+    colours = c("white", viridis::plasma(50)),
+    name = "log10(copies/L)"
+  ) +
+  theme_bw() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(
+      angle = 45, hjust = 1, size = 12, color = "black", face = "italic"
+    ),
+    axis.text.y = element_text(size = 12, color = "black"),
+    panel.grid = element_blank(),
+    plot.margin = margin(t = 5, r = 5, b = 5, l = 0),
+    legend.title = element_text(size = 12, color = "black"),
+    legend.text = element_text(size = 12, color = "black")
+  )
+
+p_heatmap
+
+# ==========================================================
+# 15. Combine annotation and heatmap
+# ==========================================================
+p <- (p_anno + p_heatmap) +
+  plot_layout(
+    widths = c(0.1, 1),
+    guides = "collect"
+  ) &
+  theme(legend.position = "right")
+
+#ggsave("NTM_plasmid_heatmap.pdf", plot = p, width = 10, height = 6, device = "pdf")
+
+```
+
+# Figure 5A - NTM prophage KEGG ID 
+```{r}
+############################################################
+# Prophage KO Abundance Analysis and Visualization
+############################################################
+
+# ==========================================================
+# Load required libraries
+# ==========================================================
+library(dplyr)
+library(readr)
+library(tidyr)
+library(tidyverse)
+library(pheatmap)
+library(viridis)
+
+# ==========================================================
+# 1. Load prophage gene gc/L results
+# ==========================================================
+# This file contains gene-level absolute abundance (copies/L)
+provirus_gcl <- read_csv("NTM_prophage_gcL_results.csv")
+
+# Create a consistent gene identifier by combining contig name and gene number extracted from GeneID
+provirus_gcl <- provirus_gcl %>%
+  mutate(
+    Gene_number = sub(".*_", "", GeneID),
+    Geneid_full = paste0(Chr, "_", Gene_number)
+  )
+
+# Keep only essential columns and standardize MAG names
+provirus_gcl_clean <- provirus_gcl %>%
+  select(Geneid_full, MAG, Sample, gene_gcL) %>%
+  mutate(
+    MAG = as.character(MAG),
+    MAG = gsub("^METABAT_([0-9]+).*", "MAG_\\1", MAG)
+  )
+
+
+# ==========================================================
+# 2. Load GhostKOALA KO annotations for prophage genes
+# ==========================================================
+# This file maps genes to KEGG Orthologs (KOs) and definitions.
+colnames_list <- c(
+  "Geneid_full", "KO", "Definition",
+  "score", "second_best", "second_score"
+)
+
+ghost_provirus <- read.delim(
+  "user_ko_definition_provirus.txt",
+  header = FALSE
+) %>%
+  setNames(colnames_list)
+
+
+# ==========================================================
+# 3. Load contig mapping file
+# ==========================================================
+# This file links original contig names to mapped contig names after dereplication or reassignment.
+provirus_map <- read.delim(
+  "provirus_full_hits_contig.tsv",
+  header = FALSE,
+  sep = ""
+)
+
+colnames(provirus_map) <- c(
+  "Original_Contig", "Mapped_Contig",
+  "MAG", "Len1", "Len2", "Identity"
+)
+
+
+# ==========================================================
+# 4. Fix contig names and reconcile gene IDs
+# ==========================================================
+# This step ensures that KO annotations match the gene IDs used in the gc/L file after contig renaming.
+ghost_provirus2 <- ghost_provirus %>%
+  mutate(
+    Contig_base = sub("_[0-9]+$", "", Geneid_full)
+  ) %>%
+  left_join(
+    provirus_map,
+    by = c("Contig_base" = "Original_Contig")
+  ) %>%
+  mutate(
+    MAG = sub("^METABAT_([0-9]+).*", "MAG_\\1", MAG),
+    Geneid_final = ifelse(
+      !is.na(Mapped_Contig),
+      paste0(
+        Mapped_Contig,
+        sub("^.*(_[0-9]+)$", "\\1", Geneid_full)
+      ),
+      Geneid_full
+    )
+  )
+
+
+# ==========================================================
+# 5. Merge KO annotations with gene-level gc/L data
+# ==========================================================
+# The resulting table contains gene abundance, KO annotation, functional definition, and MAG identity.
+provirus_merged <- provirus_gcl_clean %>%
+  left_join(
+    ghost_provirus2 %>%
+      select(Geneid_final, KO, Definition, MAG),
+    by = c("Geneid_full" = "Geneid_final", "MAG")
+  )
+
+
+# ==========================================================
+# 6. Summarize KO abundance per MAG
+# ==========================================================
+# Gene-level gc/L values were averaged across samples at the KO level within each MAG.
+provirus_ko_summary <- provirus_merged %>%
+  filter(!is.na(KO), KO != "") %>%
+  group_by(MAG, KO, Definition) %>%
+  summarise(
+    Average_gcL = mean(gene_gcL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+# ==========================================================
+# 7. Create a complete MAG × KO matrix
+# ==========================================================
+# This ensures that all MAG–KO combinations exist, with missing values filled as zero.
+ko_provirus_avg <- provirus_merged %>%
+  filter(!is.na(KO), KO != "") %>%
+  group_by(MAG, KO, Definition) %>%
+  summarise(
+    avg_gcL = mean(gene_gcL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+all_MAGs <- sort(unique(provirus_merged$MAG))
+all_KOs  <- sort(unique(ko_provirus_avg$KO))
+
+ko_provirus_complete <- ko_provirus_avg %>%
+  complete(
+    MAG = all_MAGs,
+    KO = all_KOs,
+    fill = list(avg_gcL = 0)
+  ) %>%
+  group_by(KO) %>%
+  fill(Definition, .direction = "downup") %>%
+  ungroup()
+
+
+# ==========================================================
+# 8. Prepare data for bubble plot
+# ==========================================================
+# Remove bracketed annotations (e.g., "[*]") from KO labels
+# Set the y-axis order manually
+y_order <- c(
+  "DNMT1, dcm; DNA (cytosine-5)-methyltransferase 1",
+  "mcrA; 5-methylcytosine-specific restriction enzyme A",
+  "mutY; A/G-specific adenine glycosylase",
+    "dam; DNA adenine methylase",
+  "xerC; integrase/recombinase XerC",
+  "cpaF, tadA; pilus assembly protein CpaF",
+  "PHB1; prohibitin 1"
+)
+
+
+bubble_df_provirus <- ko_provirus_complete %>%
+  mutate(
+    KO_ID_clean = gsub("\\s*\\[.*?\\]", "", Definition),
+    MAG = factor(MAG, levels = all_MAGs)
+  )
+
+bubble_df_provirus <- bubble_df_provirus %>%
+  mutate(KO_ID_clean = factor(KO_ID_clean, levels = y_order))
+
+# ==========================================================
+# 9. Map MAG IDs to species names
+# ==========================================================
+mag_species_map <- c(
+  "MAG_107" = "M. gordonae",
+  "MAG_121" = "M. avium",
+  "MAG_44"  = "M. paragordonae",
+  "MAG_128" = "M. llatzerense",
+  "MAG_139" = "M. phocaicum",
+  "MAG_193" = "M. gadium",
+  "MAG_311" = "M. arupense"
+)
+
+bubble_df_provirus$MAG <- factor(
+  mag_species_map[as.character(bubble_df_provirus$MAG)],
+  levels = mag_species_map
+)
+
+
+# ==========================================================
+# 10. Compute log10-transformed abundance for visualization
+# ==========================================================
+bubble_df_provirus <- bubble_df_provirus %>%
+  mutate(log10_gcL = log10(avg_gcL + 1))
+
+
+# ==========================================================
+# 12. Generate heatmap
+# ==========================================================
+# The plot shows the distribution and magnitude of the prophage-associated KOs across NTM species.
+prophage <- ggplot(
+  bubble_df_provirus,
+  aes(x = MAG, y = KO_ID_clean, fill = log10_gcL)
+) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  scale_fill_gradientn(
+    colours = c("white", viridis::plasma(50)),
+    values = scales::rescale(
+      c(0, max(bubble_df_provirus$log10_gcL, na.rm = TRUE))
+    ),
+    name = "log10(copies/L)"
+  ) +
+  theme_bw() +
+  labs(x = NULL, y = NULL) +
+  theme(
+    axis.text.x = element_text(
+      size = 12, angle = 45, hjust = 1, color = "black", face = "italic"
+    ),
+    axis.text.y = element_text(size = 12, color = "black"),
+    panel.grid = element_blank(),
+    legend.text = element_text(size = 12, color = "black"),
+    legend.title = element_text(size = 12, color = "black")
+  )
+
+prophage
+ggsave("NTM_prophage_heatmap.pdf", plot = prophage, width = 8, height = 5, device = "pdf")
+
+```
+
+
